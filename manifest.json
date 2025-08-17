@@ -1,0 +1,12 @@
+{
+    "display_name": "更好的体验",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "",
+    "author": "KKTsN",
+    "version": "1.0.0",
+    "homePage": "https://github.com/RaphllA/vertin-tips",
+    "description": "模块化的qol功能合集"
+}
