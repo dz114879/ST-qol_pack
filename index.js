@@ -387,13 +387,6 @@ const autoBackupModule = {
         }
     },
     
-    // 恢复备份
-    async restoreBackup(backupFile) {
-        console.log(`[${extensionName}] 恢复备份中: ${backupFile}`);
-        // TODO: 实现恢复逻辑
-        return { success: true, message: '恢复功能暂未实现' };
-    },
-    
     // 获取备份列表
     async getBackupList() {
         try {
@@ -527,7 +520,7 @@ function addSettingsUI() {
     <div id="vertin-tips-settings">
         <div class="inline-drawer">
             <div id="vertin-tips-header" class="inline-drawer-toggle inline-drawer-header">
-                <b>Vertin的QOL工具包</b>
+                <b>KKTsN的QOL工具包</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div id="vertin-tips-content" class="inline-drawer-content" style="display: none;">
