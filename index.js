@@ -261,9 +261,6 @@ const autoBackupModule = {
     
     // 执行本地备份 (Node.js/Electron环境)
     async performLocalBackup(sourcePath, destinationPath, backupDirName) {
-        if (typeof require === 'undefined') {
-            return { success: false, error: '当前环境不支持本地文件系统访问' };
-        }
 
         try {
             const fs = require('fs/promises');
