@@ -119,15 +119,16 @@ const moduleManager = {
 // 自动备份模块
 const autoBackupModule = {
     name: 'autoBackup',
-    displayName: '自动备份',
-    description: '自动备份SillyTavern数据文件夹',
-    version: '1.0.0',
+    displayName: '文件夹备份',
+    description: '按指定时间间隔，将一个文件夹完整备份到另一个位置。',
+    version: '1.1.0',
     
     // 备份配置
     config: {
         interval: 60, // 默认60分钟
-        backupPath: '', // 备份路径，空为默认桌面
-        maxBackups: 10, // 最大备份文件数
+        sourcePath: '', // 要备份的源文件夹路径
+        destinationPath: '', // 备份目标路径
+        maxBackups: 10, // 最大备份文件夹数
         enabled: false
     },
     
@@ -204,234 +205,190 @@ const autoBackupModule = {
 
         try {
             console.log(`[${extensionName}] 开始创建备份 (模式: ${mode})...`);
-
-            // 自动备份总是使用下载方式
-            if (mode === 'auto') {
-                return await this.downloadBackup();
+            
+            // 检查环境和配置
+            if (typeof require === 'undefined') {
+                const msg = '当前环境不支持文件系统访问，无法备份。';
+                console.error(`[${extensionName}] ${msg}`);
+                this.showNotification('备份失败', msg, 'error');
+                return { success: false, error: msg };
             }
 
-            // 手动备份：优先尝试本地备份，如果失败则回退到下载
-            const backupPath = this.getBackupPath();
+            const sourcePath = this.config.sourcePath;
+            const destinationPath = this.getDestinationPath();
 
-            // 如果没有设置备份路径或在浏览器中，则直接下载
-            if (!backupPath || typeof require === 'undefined') {
-                console.log(`[${extensionName}] 未配置本地路径或在浏览器环境，回退到下载方式`);
-                return await this.downloadBackup();
+            if (!sourcePath || !destinationPath) {
+                const msg = '请先在设置中指定源文件夹和目标文件夹。';
+                console.warn(`[${extensionName}] ${msg}`);
+                this.showNotification('备份中断', msg, 'warning');
+                return { success: false, error: msg };
             }
 
             // 执行本地备份
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-            const backupFileName = `sillytavern-data-backup-${timestamp}.zip`;
-            const result = await this.performLocalBackup(backupPath, backupFileName);
+            const backupDirName = `backup-${timestamp}`;
+            const result = await this.performLocalBackup(sourcePath, destinationPath, backupDirName);
 
             if (result.success) {
-                console.log(`[${extensionName}] 本地备份成功: ${result.filePath}`);
+                console.log(`[${extensionName}] 备份成功: ${result.path}`);
                 await this.cleanupOldBackups();
-                this.showNotification('备份成功', `备份已保存到: ${result.filePath}`, 'success');
+                this.showNotification('备份成功', `备份已创建于: ${result.path}`, 'success');
                 return result;
             } else {
-                console.warn(`[${extensionName}] 本地备份失败，尝试下载方式:`, result.error);
-                this.showNotification('本地备份失败', '将尝试使用下载方式进行备份', 'warning');
-                return await this.downloadBackup();
+                console.error(`[${extensionName}] 备份失败:`, result.error);
+                this.showNotification('备份失败', '详情请查看控制台日志', 'error');
+                return result;
             }
         } catch (error) {
-            console.error(`[${extensionName}] 备份失败:`, error);
+            console.error(`[${extensionName}] 备份过程中发生严重错误:`, error);
             const errorMessage = error.stack || (error.message || '未知错误');
             this.showNotification('备份失败', `详情请查看控制台日志`, 'error');
             return { success: false, error: errorMessage };
         }
     },
     
-    // 获取备份路径
-    getBackupPath() {
-        if (this.config.backupPath) {
-            return this.config.backupPath;
+    // 获取备份目标路径
+    getDestinationPath() {
+        if (this.config.destinationPath) {
+            return this.config.destinationPath;
         }
-
-        // 在浏览器或无法访问文件系统的环境中，我们无法确定默认路径。
-        // 返回空字符串将使备份逻辑回退到下载。
-        if (typeof require === 'undefined') {
-            return '';
-        }
+        
+        if (typeof require === 'undefined') return '';
 
         try {
             // 对于Node.js/Electron，提供一个合理的默认值。
             const path = require('path');
             const os = require('os');
-            return path.join(os.homedir(), 'Desktop', 'SillyTavern-Backups');
+            return path.join(os.homedir(), 'Desktop', 'SillyTavern-FolderBackups');
         } catch (e) {
-            console.error(`[${extensionName}] 无法确定默认备份路径:`, e);
-            // 如果os/path模块因某种原因失败，则回退。
+            console.error(`[${extensionName}] 无法确定默认备份目标路径:`, e);
             return './backups';
         }
     },
     
     // 执行本地备份 (Node.js/Electron环境)
-    async performLocalBackup(backupPath, fileName) {
+    async performLocalBackup(sourcePath, destinationPath, backupDirName) {
         if (typeof require === 'undefined') {
             return { success: false, error: '当前环境不支持本地文件系统访问' };
         }
 
         try {
-            const fs = require('fs').promises;
-            const fullPath = require('path').join(backupPath, fileName);
+            const fs = require('fs/promises');
+            const path = require('path');
 
-            // 确保备份目录存在
-            await fs.mkdir(backupPath, { recursive: true });
+            const fullDestinationPath = path.join(destinationPath, backupDirName);
 
-            // 压缩data文件夹
-            await this.zipDirectory('./data', fullPath);
+            // 检查源路径是否存在
+            try {
+                await fs.access(sourcePath);
+            } catch (error) {
+                return { success: false, error: `源文件夹不存在或无法访问: ${sourcePath}` };
+            }
 
-            const stats = await fs.stat(fullPath);
-            return { success: true, filePath: fullPath, size: stats.size };
+            // 创建父级目标目录
+            await fs.mkdir(destinationPath, { recursive: true });
+
+            // 复制文件夹
+            await fs.cp(sourcePath, fullDestinationPath, { recursive: true });
+            
+            return { success: true, path: fullDestinationPath };
         } catch (error) {
             console.error(`[${extensionName}] 本地备份期间发生错误:`, error);
             return { success: false, error: error.stack || (error.message || '未知错误') };
         }
     },
-
-    // 执行下载备份
-    async downloadBackup() {
-        console.log(`[${extensionName}] 正在准备下载备份...`);
-        try {
-            // 此处应调用SillyTavern的API来触发下载
-            // 假设有一个全局函数`getBackup()`可以触发下载
-            if (window.getBackup && typeof window.getBackup === 'function') {
-                window.getBackup();
-                this.showNotification('备份已开始', '您的浏览器将开始下载备份文件。', 'success');
-                return { success: true, method: 'download' };
-            } else {
-                throw new Error('未找到SillyTavern的备份功能 (getBackup)');
-            }
-        } catch (error) {
-            console.error(`[${extensionName}] 下载备份失败:`, error);
-            const errorMessage = error.stack || (error.message || '未知错误');
-            this.showNotification('下载备份失败', '详情请查看控制台日志', 'error');
-            return { success: false, error: errorMessage, method: 'download' };
-        }
-    },
-    
-    // 浏览器环境下的备份处理（现在由createBackup决定是否调用）
-    async browserBackup() {
-       return await this.downloadBackup();
-    },
-    
-    // 压缩目录
-    async zipDirectory(sourceDir, targetFile) {
-        return new Promise((resolve, reject) => {
-            if (typeof require === 'undefined') {
-                reject(new Error('require不可用，无法压缩文件'));
-                return;
-            }
-            
-            const fs = require('fs');
-            const archiver = require('archiver');
-            
-            const output = fs.createWriteStream(targetFile);
-            const archive = archiver('zip', { zlib: { level: 9 } });
-            
-            output.on('close', () => {
-                resolve();
-            });
-            
-            archive.on('error', (err) => {
-                reject(err);
-            });
-            
-            archive.pipe(output);
-            archive.directory(sourceDir, false);
-            archive.finalize();
-        });
-    },
     
     // 清理旧备份
     async cleanupOldBackups() {
         try {
-            const backupPath = this.getBackupPath();
+            const destinationPath = this.getDestinationPath();
+            if (!destinationPath || typeof require === 'undefined') return;
+
+            const fs = require('fs/promises');
+            const path = require('path');
             
-            if (typeof require !== 'undefined') {
-                const fs = require('fs').promises;
-                const path = require('path');
-                
-                const files = await fs.readdir(backupPath);
-                const backupFiles = files
-                    .filter(file => file.startsWith('sillytavern-data-backup-') && file.endsWith('.zip'))
-                    .map(file => ({
-                        name: file,
-                        path: path.join(backupPath, file),
-                        stat: null
-                    }));
-                
-                // 获取文件统计信息
-                for (const file of backupFiles) {
-                    try {
-                        file.stat = await fs.stat(file.path);
-                    } catch (err) {
-                        console.warn(`[${extensionName}] 无法获取文件统计信息: ${file.name}`);
-                    }
+            const dirents = await fs.readdir(destinationPath, { withFileTypes: true });
+            const backupDirs = dirents
+                .filter(dirent => dirent.isDirectory() && dirent.name.startsWith('backup-'))
+                .map(dirent => ({
+                    name: dirent.name,
+                    path: path.join(destinationPath, dirent.name),
+                    stat: null
+                }));
+
+            // 获取文件夹统计信息 (mtime)
+            for (const dir of backupDirs) {
+                try {
+                    dir.stat = await fs.stat(dir.path);
+                } catch (err) {
+                    console.warn(`[${extensionName}] 无法获取文件夹统计信息: ${dir.name}`);
                 }
-                
-                // 按修改时间排序，新的在前
-                backupFiles.sort((a, b) => {
-                    if (!a.stat || !b.stat) return 0;
-                    return b.stat.mtime.getTime() - a.stat.mtime.getTime();
-                });
-                
-                // 删除超出数量限制的备份
-                if (backupFiles.length > this.config.maxBackups) {
-                    const filesToDelete = backupFiles.slice(this.config.maxBackups);
-                    for (const file of filesToDelete) {
-                        try {
-                            await fs.unlink(file.path);
-                            console.log(`[${extensionName}] 已删除旧备份: ${file.name}`);
-                        } catch (err) {
-                            console.warn(`[${extensionName}] 删除备份失败: ${file.name}`, err);
-                        }
+            }
+            
+            // 按修改时间排序，新的在前
+            backupDirs.sort((a, b) => {
+                if (!a.stat || !b.stat) return 0;
+                return b.stat.mtime.getTime() - a.stat.mtime.getTime();
+            });
+            
+            // 删除超出数量限制的备份
+            if (backupDirs.length > this.config.maxBackups) {
+                const dirsToDelete = backupDirs.slice(this.config.maxBackups);
+                for (const dir of dirsToDelete) {
+                    try {
+                        await fs.rm(dir.path, { recursive: true, force: true });
+                        console.log(`[${extensionName}] 已删除旧备份文件夹: ${dir.name}`);
+                    } catch (err) {
+                        console.warn(`[${extensionName}] 删除备份文件夹失败: ${dir.name}`, err);
                     }
                 }
             }
         } catch (error) {
-            console.warn(`[${extensionName}] 清理旧备份失败:`, error);
+            // 如果目标文件夹不存在，会报错，这很正常，直接忽略
+            if (error.code !== 'ENOENT') {
+                 console.warn(`[${extensionName}] 清理旧备份失败:`, error);
+            }
         }
     },
     
     // 获取备份列表
     async getBackupList() {
         try {
-            const backupPath = this.getBackupPath();
+            const destinationPath = this.getDestinationPath();
+            if (!destinationPath || typeof require === 'undefined') return [];
+
+            const fs = require('fs/promises');
+            const path = require('path');
             
-            if (typeof require !== 'undefined') {
-                const fs = require('fs').promises;
-                const path = require('path');
-                
-                const files = await fs.readdir(backupPath);
-                const backupFiles = [];
-                
-                for (const file of files) {
-                    if (file.startsWith('sillytavern-data-backup-') && file.endsWith('.zip')) {
-                        try {
-                            const filePath = path.join(backupPath, file);
-                            const stat = await fs.stat(filePath);
-                            backupFiles.push({
-                                name: file,
-                                path: filePath,
-                                size: stat.size,
-                                created: stat.mtime
-                            });
-                        } catch (err) {
-                            console.warn(`[${extensionName}] 无法获取备份文件信息: ${file}`);
-                        }
+            const dirents = await fs.readdir(destinationPath, { withFileTypes: true });
+            const backupDirs = [];
+
+            for (const dirent of dirents) {
+                if (dirent.isDirectory() && dirent.name.startsWith('backup-')) {
+                    try {
+                        const dirPath = path.join(destinationPath, dirent.name);
+                        const stat = await fs.stat(dirPath);
+                        // 计算文件夹大小会比较慢，暂时不实现
+                        backupDirs.push({
+                            name: dirent.name,
+                            path: dirPath,
+                            size: -1, // -1 表示是文件夹或大小未知
+                            created: stat.mtime
+                        });
+                    } catch (err) {
+                        console.warn(`[${extensionName}] 无法获取备份文件夹信息: ${dirent.name}`);
                     }
                 }
-                
-                // 按创建时间排序，新的在前
-                backupFiles.sort((a, b) => b.created.getTime() - a.created.getTime());
-                return backupFiles;
+    
             }
             
-            return [];
+            // 按创建时间排序，新的在前
+            backupDirs.sort((a, b) => b.created.getTime() - a.created.getTime());
+            return backupDirs;
         } catch (error) {
-            console.warn(`[${extensionName}] 获取备份列表失败:`, error);
+            if (error.code !== 'ENOENT') {
+                console.warn(`[${extensionName}] 获取备份列表失败:`, error);
+            }
             return [];
         }
     },
@@ -474,9 +431,15 @@ const autoBackupModule = {
         }
     },
     
-    // 设置备份路径
-    setBackupPath(path) {
-        this.config.backupPath = path || '';
+    // 设置源路径
+    setSourcePath(path) {
+        this.config.sourcePath = path || '';
+        this.saveConfig();
+    },
+
+    // 设置备份目标路径
+    setDestinationPath(path) {
+        this.config.destinationPath = path || '';
         this.saveConfig();
     },
     
@@ -525,7 +488,7 @@ jQuery(async () => {
 // 添加设置界面
 function addSettingsUI() {
     const settingsHtml = `
-    <div id="vertin-tips-settings" style="background-color: #333; color: #fff; padding: 10px; border-radius: 5px;">
+    <div id="vertin-tips-settings" style="background-color: #2c2c2c; color: #fff; padding: 10px; border-radius: 5px;">
         <div class="inline-drawer">
             <div id="vertin-tips-header" class="inline-drawer-toggle inline-drawer-header">
                 <b>KKTsN的QOL工具包</b>
@@ -540,7 +503,7 @@ function addSettingsUI() {
                         </label>
                     </div>
                     
-                    <div style="margin-bottom: 15px; padding: 10px; background: #444; border-radius: 5px;">
+                    <div style="margin-bottom: 15px; padding: 10px; background: #3a3a3a; border-radius: 5px;">
                         <h4 style="margin: 0 0 10px 0; color: #fff;">模块管理</h4>
                         <div id="vertin-tips-modules-list">
                             <!-- 模块列表将在这里动态生成 -->
@@ -604,7 +567,7 @@ function updateModulesList() {
         const isLoaded = moduleManager.isLoaded(module.name);
         
         let moduleHtml = `
-            <div style="margin-bottom: 10px; padding: 8px; border: 1px solid #ddd; border-radius: 3px;">
+            <div style="margin-bottom: 10px; padding: 8px; border: 1px solid #555; border-radius: 3px; background-color: #444; color: #fff;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <div>
                         <strong>${module.displayName || module.name}</strong>
@@ -617,17 +580,17 @@ function updateModulesList() {
                         <span>启用</span>
                     </label>
                 </div>
-                ${module.description ? `<div style="font-size: 12px; color: #666; margin-top: 5px;">${module.description}</div>` : ''}
+                ${module.description ? `<div style="font-size: 12px; color: #ccc; margin-top: 5px;">${module.description}</div>` : ''}
         `;
         
         // 为自动备份模块添加特殊配置界面
         if (module.name === 'autoBackup') {
             const config = module.config || {};
             moduleHtml += `
-                <div id="autoBackup-config" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 3px; ${isEnabled ? '' : 'display: none;'}">
+                <div id="autoBackup-config" style="margin-top: 10px; padding: 10px; background: #555; border-radius: 3px; color: #fff; ${isEnabled ? '' : 'display: none;'}">
                     <div style="margin-bottom: 10px;">
                         <label style="display: block; margin-bottom: 5px; font-weight: bold;">备份间隔:</label>
-                        <select id="autoBackup-interval" style="width: 100%; padding: 4px;">
+                        <select id="autoBackup-interval" style="width: 100%; padding: 4px; background-color: #2c2c2c; color: #fff; border-color: #666;">
                             <option value="15" ${config.interval === 15 ? 'selected' : ''}>15分钟</option>
                             <option value="30" ${config.interval === 30 ? 'selected' : ''}>30分钟</option>
                             <option value="60" ${config.interval === 60 ? 'selected' : ''}>1小时</option>
@@ -638,22 +601,31 @@ function updateModulesList() {
                             <option value="1440" ${config.interval === 1440 ? 'selected' : ''}>24小时</option>
                         </select>
                     </div>
-                    
+
                     <div style="margin-bottom: 10px;">
-                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">备份目录:</label>
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">要备份的源文件夹:</label>
                         <div style="display: flex; gap: 5px;">
-                            <input type="text" id="autoBackup-path" placeholder="留空使用默认路径（桌面）"
-                                   value="${config.backupPath || ''}" style="flex: 1; padding: 4px;" />
-                            <button type="button" id="autoBackup-browse" style="padding: 4px 8px;">浏览</button>
+                            <input type="text" id="autoBackup-sourcePath" placeholder="选择或输入要备份的文件夹路径"
+                                   value="${config.sourcePath || ''}" style="flex: 1; padding: 4px; background-color: #2c2c2c; color: #fff; border-color: #666;" />
+                            <button type="button" id="autoBackup-browseSource" class="autoBackup-browse" style="padding: 4px 8px; background-color: #444; color: #fff; border: 1px solid #666;">浏览</button>
                         </div>
-                        <small style="color: #666;">默认路径: ~/Desktop/SillyTavern-Backups</small>
                     </div>
                     
                     <div style="margin-bottom: 10px;">
-                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">最大备份文件数:</label>
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">备份目标目录:</label>
+                        <div style="display: flex; gap: 5px;">
+                            <input type="text" id="autoBackup-destinationPath" placeholder="留空使用默认路径（桌面）"
+                                   value="${config.destinationPath || ''}" style="flex: 1; padding: 4px; background-color: #2c2c2c; color: #fff; border-color: #666;" />
+                            <button type="button" id="autoBackup-browseDestination" class="autoBackup-browse" style="padding: 4px 8px; background-color: #444; color: #fff; border: 1px solid #666;">浏览</button>
+                        </div>
+                        <small style="color: #ccc;">默认路径: ~/Desktop/SillyTavern-FolderBackups</small>
+                    </div>
+                    
+                    <div style="margin-bottom: 10px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: bold;">最大备份文件夹数:</label>
                         <input type="number" id="autoBackup-maxBackups" min="1" max="100"
-                               value="${config.maxBackups || 10}" style="width: 100%; padding: 4px;" />
-                        <small style="color: #666;">超过此数量的旧备份将被自动删除</small>
+                                 value="${config.maxBackups || 10}" style="width: 100%; padding: 4px; background-color: #2c2c2c; color: #fff; border-color: #666;" />
+                        <small style="color: #ccc;">超过此数量的旧备份将被自动删除</small>
                     </div>
                     
                     <div style="margin-bottom: 10px;">
@@ -732,28 +704,52 @@ function bindAutoBackupEvents() {
         autoBackupModule.setInterval(interval);
     });
     
-    // 备份路径改变
-    $('#autoBackup-path').off('change').on('change', function() {
+    // 源路径改变
+    $('#autoBackup-sourcePath').off('change').on('change', function() {
         const path = $(this).val().trim();
-        autoBackupModule.setBackupPath(path);
+        autoBackupModule.setSourcePath(path);
+    });
+
+    // 目标路径改变
+    $('#autoBackup-destinationPath').off('change').on('change', function() {
+        const path = $(this).val().trim();
+        autoBackupModule.setDestinationPath(path);
     });
     
-    // 浏览文件夹
-    $('#autoBackup-browse').off('click').on('click', async function() {
+    // 浏览文件夹 (通用)
+    $('.autoBackup-browse').off('click').on('click', async function() {
+        const targetInputId = $(this).attr('id') === 'autoBackup-browseSource'
+            ? 'autoBackup-sourcePath'
+            : 'autoBackup-destinationPath';
+        
         try {
-            if ('showDirectoryPicker' in window) {
+            // Electron/Node.js 环境
+            if (typeof require !== 'undefined') {
+                 const { ipcRenderer } = require('electron');
+                 const result = await ipcRenderer.invoke('show-open-dialog', {
+                     properties: ['openDirectory']
+                 });
+
+                 if (!result.canceled && result.filePaths.length > 0) {
+                     const selectedPath = result.filePaths[0];
+                     $(`#${targetInputId}`).val(selectedPath).trigger('change');
+                 }
+            }
+            // 浏览器环境
+            else if ('showDirectoryPicker' in window) {
                 const dirHandle = await window.showDirectoryPicker();
-                if (dirHandle) {
-                    // 注意：File System Access API 无法直接获取路径字符串
-                    // 这里只是示例，实际需要根据具体情况处理
-                    $('#autoBackup-path').val(dirHandle.name);
-                    autoBackupModule.setBackupPath(dirHandle.name);
-                }
-            } else {
-                alert('您的浏览器不支持文件夹选择功能，请手动输入路径');
+                // 浏览器中无法直接获取完整路径，只能用name，这在本地环境中意义不大
+                // 但为了UI一致性，我们还是更新它
+                $(`#${targetInputId}`).val(dirHandle.name).trigger('change');
+            }
+            else {
+                alert('您的浏览器或当前环境不支持文件夹选择功能，请手动输入路径。');
             }
         } catch (error) {
-            console.warn('用户取消了文件夹选择');
+            // EBUSY错误通常是对话框已打开，可以忽略
+            if (error.code !== 'EBUSY') {
+                 console.warn('文件夹选择操作被取消或失败:', error);
+            }
         }
     });
     
@@ -807,20 +803,29 @@ function bindAutoBackupEvents() {
     
     // 打开备份文件夹
     $('#autoBackup-openFolder').off('click').on('click', function() {
-        const backupPath = autoBackupModule.getBackupPath();
+        const destinationPath = autoBackupModule.getDestinationPath();
         
+        if (!destinationPath) {
+            alert("备份目标文件夹未设置。");
+            return;
+        }
+
         // 尝试在新窗口打开文件夹（仅在本地环境有效）
         if (typeof require !== 'undefined') {
-            const { shell } = require('electron');
-            shell.openPath(backupPath);
+            try {
+                const { shell } = require('electron');
+                shell.openPath(destinationPath);
+            } catch(e) {
+                 alert(`无法打开文件夹。请手动访问: ${destinationPath}`);
+            }
         } else {
             // 复制路径到剪贴板
             if (navigator.clipboard) {
-                navigator.clipboard.writeText(backupPath).then(() => {
-                    alert(`备份路径已复制到剪贴板: ${backupPath}`);
+                navigator.clipboard.writeText(destinationPath).then(() => {
+                    alert(`备份目标路径已复制到剪贴板: ${destinationPath}`);
                 });
             } else {
-                alert(`备份路径: ${backupPath}`);
+                alert(`备份目标路径: ${destinationPath}`);
             }
         }
     });
@@ -829,6 +834,7 @@ function bindAutoBackupEvents() {
 // 显示备份列表对话框
 function showBackupListDialog(backups) {
     const formatFileSize = (bytes) => {
+        if (bytes < 0) return '文件夹'; // 表示是文件夹
         const sizes = ['Bytes', 'KB', 'MB', 'GB'];
         if (bytes === 0) return '0 Bytes';
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
@@ -841,20 +847,20 @@ function showBackupListDialog(backups) {
     
     let listHtml = '<h3>备份文件列表</h3>';
     if (backups.length === 0) {
-        listHtml += '<p>暂无备份文件</p>';
+        listHtml += '<p style="color: #ccc;">暂无备份文件</p>';
     } else {
         listHtml += '<div style="max-height: 300px; overflow-y: auto;">';
         backups.forEach((backup, index) => {
             listHtml += `
-                <div style="padding: 8px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+                <div style="padding: 8px; border-bottom: 1px solid #555; display: flex; justify-content: space-between; align-items: center;">
                     <div>
-                        <div style="font-weight: bold;">${backup.name}</div>
-                        <div style="font-size: 12px; color: #666;">
+                        <div style="font-weight: bold; color: #fff;">${backup.name}</div>
+                        <div style="font-size: 12px; color: #ccc;">
                             创建时间: ${formatDate(backup.created)} | 大小: ${formatFileSize(backup.size)}
                         </div>
                     </div>
                     <div>
-                        <button onclick="copyBackupPath('${backup.path}')" style="padding: 2px 8px; margin-right: 5px;">复制路径</button>
+                        <button onclick="copyBackupPath('${backup.path}')" style="padding: 2px 8px; margin-right: 5px; background-color: #444; color: #fff; border: 1px solid #666;">复制路径</button>
                         <button onclick="deleteBackup('${backup.path}', '${backup.name}')" style="padding: 2px 8px; background: #dc3545; color: white; border: none;">删除</button>
                     </div>
                 </div>
@@ -866,10 +872,10 @@ function showBackupListDialog(backups) {
     // 创建模态对话框
     const dialogHtml = `
         <div id="backup-list-dialog" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; display: flex; justify-content: center; align-items: center;">
-            <div style="background: white; padding: 20px; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80%; overflow-y: auto;">
+            <div style="background: #3a3a3a; color: #fff; padding: 20px; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80%; overflow-y: auto;">
                 ${listHtml}
                 <div style="margin-top: 15px; text-align: right;">
-                    <button onclick="closeBackupListDialog()" style="padding: 8px 16px;">关闭</button>
+                    <button onclick="closeBackupListDialog()" style="padding: 8px 16px; background-color: #444; color: #fff; border: 1px solid #666;">关闭</button>
                 </div>
             </div>
         </div>
@@ -896,23 +902,24 @@ window.copyBackupPath = function(path) {
 
 // 全局函数：删除备份
 window.deleteBackup = function(path, name) {
-    if (confirm(`确定要删除备份文件 "${name}" 吗？此操作不可撤销。`)) {
+    if (confirm(`确定要删除备份文件夹 "${name}" 吗？此操作不可撤销。`)) {
         if (typeof require !== 'undefined') {
-            const fs = require('fs');
-            try {
-                fs.unlinkSync(path);
-                alert('备份文件已删除');
-                closeBackupListDialog();
-                // 重新显示列表
-                const autoBackupModule = moduleManager.modules.get('autoBackup');
-                if (autoBackupModule) {
-                    autoBackupModule.getBackupList().then(showBackupListDialog);
-                }
-            } catch (error) {
-                alert('删除失败: ' + error.message);
-            }
+            const fs = require('fs/promises');
+             fs.rm(path, { recursive: true, force: true })
+                .then(() => {
+                    alert('备份文件夹已删除');
+                    closeBackupListDialog();
+                    // 重新显示列表
+                    const autoBackupModule = moduleManager.modules.get('autoBackup');
+                    if (autoBackupModule) {
+                        autoBackupModule.getBackupList().then(showBackupListDialog);
+                    }
+                })
+                .catch(error => {
+                     alert('删除失败: ' + error.message);
+                });
         } else {
-            alert('无法在浏览器环境中删除文件，请手动删除');
+            alert('无法在浏览器环境中删除文件夹，请手动删除');
         }
     }
 };
