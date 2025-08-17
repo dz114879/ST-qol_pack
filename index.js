@@ -206,13 +206,6 @@ const autoBackupModule = {
         try {
             console.log(`[${extensionName}] 开始创建备份 (模式: ${mode})...`);
             
-            // 检查环境和配置
-            if (typeof require === 'undefined') {
-                const msg = '当前环境不支持文件系统访问，无法备份。';
-                console.error(`[${extensionName}] ${msg}`);
-                this.showNotification('备份失败', msg, 'error');
-                return { success: false, error: msg };
-            }
 
             const sourcePath = this.config.sourcePath;
             const destinationPath = this.getDestinationPath();
