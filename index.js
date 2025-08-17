@@ -236,8 +236,9 @@ const autoBackupModule = {
             }
         } catch (error) {
             console.error(`[${extensionName}] 备份失败:`, error);
-            this.showNotification('备份失败', error.message, 'error');
-            return { success: false, error: error.message };
+            const errorMessage = error.stack || (error.message || '未知错误');
+            this.showNotification('备份失败', `详情请查看控制台日志`, 'error');
+            return { success: false, error: errorMessage };
         }
     },
     
@@ -284,7 +285,8 @@ const autoBackupModule = {
             const stats = await fs.stat(fullPath);
             return { success: true, filePath: fullPath, size: stats.size };
         } catch (error) {
-            return { success: false, error: error.message };
+            console.error(`[${extensionName}] 本地备份期间发生错误:`, error);
+            return { success: false, error: error.stack || (error.message || '未知错误') };
         }
     },
 
@@ -302,7 +304,10 @@ const autoBackupModule = {
                 throw new Error('未找到SillyTavern的备份功能 (getBackup)');
             }
         } catch (error) {
-            return { success: false, error: error.message, method: 'download' };
+            console.error(`[${extensionName}] 下载备份失败:`, error);
+            const errorMessage = error.stack || (error.message || '未知错误');
+            this.showNotification('下载备份失败', '详情请查看控制台日志', 'error');
+            return { success: false, error: errorMessage, method: 'download' };
         }
     },
     
@@ -520,7 +525,7 @@ jQuery(async () => {
 // 添加设置界面
 function addSettingsUI() {
     const settingsHtml = `
-    <div id="vertin-tips-settings">
+    <div id="vertin-tips-settings" style="background-color: #333; color: #fff; padding: 10px; border-radius: 5px;">
         <div class="inline-drawer">
             <div id="vertin-tips-header" class="inline-drawer-toggle inline-drawer-header">
                 <b>KKTsN的QOL工具包</b>
@@ -535,8 +540,8 @@ function addSettingsUI() {
                         </label>
                     </div>
                     
-                    <div style="margin-bottom: 15px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
-                        <h4 style="margin: 0 0 10px 0;">模块管理</h4>
+                    <div style="margin-bottom: 15px; padding: 10px; background: #444; border-radius: 5px;">
+                        <h4 style="margin: 0 0 10px 0; color: #fff;">模块管理</h4>
                         <div id="vertin-tips-modules-list">
                             <!-- 模块列表将在这里动态生成 -->
                         </div>
