@@ -183,7 +183,7 @@ const autoBackupModule = {
         if (this.config.interval > 0) {
             const intervalMs = this.config.interval * 60 * 1000; // 转换为毫秒
             this.backupTimer = setInterval(() => {
-                this.createBackup();
+                this.createBackup({ mode: 'auto' });
             }, intervalMs);
             
             console.log(`[${extensionName}] 自动备份已启动，间隔: ${this.config.interval}分钟`);
@@ -199,34 +199,41 @@ const autoBackupModule = {
         }
     },
     
-    // 创建备份
-    async createBackup() {
+    async createBackup(options = {}) {
+        const { mode = 'manual' } = options; // 'manual' or 'auto'
+
         try {
-            console.log(`[${extensionName}] 开始创建备份...`);
-            
-            // 生成备份文件名（包含时间戳）
+            console.log(`[${extensionName}] 开始创建备份 (模式: ${mode})...`);
+
+            // 自动备份总是使用下载方式
+            if (mode === 'auto') {
+                return await this.downloadBackup();
+            }
+
+            // 手动备份：优先尝试本地备份，如果失败则回退到下载
+            const backupPath = this.getBackupPath();
+
+            // 如果没有设置备份路径或在浏览器中，则直接下载
+            if (!backupPath || typeof require === 'undefined') {
+                console.log(`[${extensionName}] 未配置本地路径或在浏览器环境，回退到下载方式`);
+                return await this.downloadBackup();
+            }
+
+            // 执行本地备份
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
             const backupFileName = `sillytavern-data-backup-${timestamp}.zip`;
-            
-            // 获取备份路径
-            const backupPath = this.getBackupPath();
-            
-            // 调用SillyTavern的备份API或使用文件系统API
-            const result = await this.performBackup(backupPath, backupFileName);
-            
+            const result = await this.performLocalBackup(backupPath, backupFileName);
+
             if (result.success) {
-                console.log(`[${extensionName}] 备份创建成功: ${result.filePath}`);
-                
-                // 清理旧备份
+                console.log(`[${extensionName}] 本地备份成功: ${result.filePath}`);
                 await this.cleanupOldBackups();
-                
-                // 显示通知
                 this.showNotification('备份成功', `备份已保存到: ${result.filePath}`, 'success');
+                return result;
             } else {
-                throw new Error(result.error || '备份失败');
+                console.warn(`[${extensionName}] 本地备份失败，尝试下载方式:`, result.error);
+                this.showNotification('本地备份失败', '将尝试使用下载方式进行备份', 'warning');
+                return await this.downloadBackup();
             }
-            
-            return result;
         } catch (error) {
             console.error(`[${extensionName}] 备份失败:`, error);
             this.showNotification('备份失败', error.message, 'error');
@@ -239,73 +246,69 @@ const autoBackupModule = {
         if (this.config.backupPath) {
             return this.config.backupPath;
         }
-        
-        // 默认使用桌面路径
-        const userProfile = process.env.USERPROFILE || process.env.HOME;
-        return userProfile ? `${userProfile}/Desktop/SillyTavern-Backups` : './backups';
-    },
-    
-    // 执行实际的备份操作
-    async performBackup(backupPath, fileName) {
+
+        // 在浏览器或无法访问文件系统的环境中，我们无法确定默认路径。
+        // 返回空字符串将使备份逻辑回退到下载。
+        if (typeof require === 'undefined') {
+            return '';
+        }
+
         try {
-            // 这里需要根据SillyTavern的实际API来实现
-            // 由于我们在浏览器环境中，需要使用Electron的API或者SillyTavern提供的文件操作API
-            
-            // 模拟备份过程（实际实现需要调用具体的文件系统API）
-            const fullPath = `${backupPath}/${fileName}`;
-            
-            // 检查是否能访问文件系统
-            if (typeof require !== 'undefined') {
-                const fs = require('fs').promises;
-                const path = require('path');
-                const archiver = require('archiver');
-                
-                // 确保备份目录存在
-                await fs.mkdir(backupPath, { recursive: true });
-                
-                // 压缩data文件夹
-                await this.zipDirectory('./data', fullPath);
-                
-                return {
-                    success: true,
-                    filePath: fullPath,
-                    size: (await fs.stat(fullPath)).size
-                };
-            } else {
-                // 浏览器环境下的处理
-                return await this.browserBackup(backupPath, fileName);
-            }
-        } catch (error) {
-            return {
-                success: false,
-                error: error.message
-            };
+            // 对于Node.js/Electron，提供一个合理的默认值。
+            const path = require('path');
+            const os = require('os');
+            return path.join(os.homedir(), 'Desktop', 'SillyTavern-Backups');
+        } catch (e) {
+            console.error(`[${extensionName}] 无法确定默认备份路径:`, e);
+            // 如果os/path模块因某种原因失败，则回退。
+            return './backups';
         }
     },
     
-    // 浏览器环境下的备份处理
-    async browserBackup(backupPath, fileName) {
+    // 执行本地备份 (Node.js/Electron环境)
+    async performLocalBackup(backupPath, fileName) {
+        if (typeof require === 'undefined') {
+            return { success: false, error: '当前环境不支持本地文件系统访问' };
+        }
+
         try {
-            // 使用File System Access API（如果支持）
-            if ('showDirectoryPicker' in window) {
-                const dirHandle = await window.showDirectoryPicker();
-                // 实现目录备份逻辑
-                // 这里需要遍历data目录并创建备份
-                return {
-                    success: true,
-                    filePath: `${backupPath}/${fileName}`,
-                    message: '使用浏览器文件系统API备份'
-                };
+            const fs = require('fs').promises;
+            const fullPath = require('path').join(backupPath, fileName);
+
+            // 确保备份目录存在
+            await fs.mkdir(backupPath, { recursive: true });
+
+            // 压缩data文件夹
+            await this.zipDirectory('./data', fullPath);
+
+            const stats = await fs.stat(fullPath);
+            return { success: true, filePath: fullPath, size: stats.size };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    },
+
+    // 执行下载备份
+    async downloadBackup() {
+        console.log(`[${extensionName}] 正在准备下载备份...`);
+        try {
+            // 此处应调用SillyTavern的API来触发下载
+            // 假设有一个全局函数`getBackup()`可以触发下载
+            if (window.getBackup && typeof window.getBackup === 'function') {
+                window.getBackup();
+                this.showNotification('备份已开始', '您的浏览器将开始下载备份文件。', 'success');
+                return { success: true, method: 'download' };
             } else {
-                throw new Error('浏览器不支持文件系统访问API');
+                throw new Error('未找到SillyTavern的备份功能 (getBackup)');
             }
         } catch (error) {
-            // 回退到下载方式
-            return {
-                success: false,
-                error: '需要用户手动选择备份位置'
-            };
+            return { success: false, error: error.message, method: 'download' };
         }
+    },
+    
+    // 浏览器环境下的备份处理（现在由createBackup决定是否调用）
+    async browserBackup() {
+       return await this.downloadBackup();
     },
     
     // 压缩目录
@@ -453,7 +456,7 @@ const autoBackupModule = {
     
     // 手动备份
     async manualBackup() {
-        return await this.createBackup();
+        return await this.createBackup({ mode: 'manual' });
     },
     
     // 设置备份间隔
